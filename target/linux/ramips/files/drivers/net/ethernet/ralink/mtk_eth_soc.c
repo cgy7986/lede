@@ -35,6 +35,7 @@
 #include <linux/of_gpio.h>
 #include <linux/gpio.h>
 #include <linux/gpio/consumer.h>
+#include <linux/version.h>
 
 #include <asm/mach-ralink/ralink_regs.h>
 
@@ -260,12 +261,16 @@ static void fe_clean_rx(struct fe_priv *priv)
 		ring->rx_dma = NULL;
 	}
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 13, 0)
+	page_frag_cache_drain(&ring->frag_cache);
+#else
 	if (!ring->frag_cache.va)
-	    return;
+		return;
 
 	page = virt_to_page(ring->frag_cache.va);
 	__page_frag_cache_drain(page, ring->frag_cache.pagecnt_bias);
 	memset(&ring->frag_cache, 0, sizeof(ring->frag_cache));
+#endif
 }
 
 static int fe_alloc_rx(struct fe_priv *priv)
@@ -889,8 +894,6 @@ static int fe_poll_rx(struct napi_struct *napi, int budget,
 	struct fe_rx_dma *rxd, trxd;
 	int done = 0, pad;
 
-	fe_reg_w32(rx_intr, FE_REG_FE_INT_STATUS);
-
 	if (netdev->features & NETIF_F_RXCSUM)
 		checksum_bit = soc->checksum_bit;
 	else
@@ -983,6 +986,9 @@ release_desc:
 		done++;
 	}
 
+	if (done < budget)
+		fe_reg_w32(rx_intr, FE_REG_FE_INT_STATUS);
+
 	return done;
 }
 
@@ -996,8 +1002,6 @@ static int fe_poll_tx(struct fe_priv *priv, int budget, u32 tx_intr,
 	int done = 0;
 	u32 idx, hwidx;
 	struct fe_tx_ring *ring = &priv->tx_ring;
-
-	fe_reg_w32(tx_intr, FE_REG_FE_INT_STATUS);
 
 	idx = ring->tx_free_idx;
 	hwidx = fe_reg_r32(FE_REG_TX_DTX_IDX0);
@@ -1022,7 +1026,9 @@ static int fe_poll_tx(struct fe_priv *priv, int budget, u32 tx_intr,
 	if (idx == hwidx) {
 		/* read hw index again make sure no new tx packet */
 		hwidx = fe_reg_r32(FE_REG_TX_DTX_IDX0);
-		if (idx != hwidx)
+		if (idx == hwidx)
+			fe_reg_w32(tx_intr, FE_REG_FE_INT_STATUS);
+		else
 			*tx_again = 1;
 	} else {
 		*tx_again = 1;
@@ -1402,9 +1408,7 @@ static int __init fe_init(struct net_device *dev)
 
 	fe_reset_phy(priv);
 
-	mac_addr = of_get_mac_address(priv->dev->of_node);
-	if (!IS_ERR_OR_NULL(mac_addr))
-		ether_addr_copy(dev->dev_addr, mac_addr);
+	of_get_mac_address(priv->dev->of_node, dev->dev_addr);
 
 	/* If the mac address is invalid, use random mac address  */
 	if (!is_valid_ether_addr(dev->dev_addr)) {
@@ -1693,7 +1697,11 @@ static int fe_probe(struct platform_device *pdev)
 		priv->tx_ring.tx_ring_size *= 4;
 		priv->rx_ring.rx_ring_size *= 4;
 	}
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 1, 0)
+	netif_napi_add_weight(netdev, &priv->rx_napi, fe_poll, napi_weight);
+#else
 	netif_napi_add(netdev, &priv->rx_napi, fe_poll, napi_weight);
+#endif
 	fe_set_ethtool_ops(netdev);
 
 	err = register_netdev(netdev);
@@ -1717,7 +1725,11 @@ err_out:
 	return err;
 }
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 11, 0)
+static void fe_remove(struct platform_device *pdev)
+#else
 static int fe_remove(struct platform_device *pdev)
+#endif
 {
 	struct net_device *dev = platform_get_drvdata(pdev);
 	struct fe_priv *priv = netdev_priv(dev);
@@ -1731,7 +1743,9 @@ static int fe_remove(struct platform_device *pdev)
 	free_netdev(dev);
 	platform_set_drvdata(pdev, NULL);
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 11, 0)
 	return 0;
+#endif
 }
 
 static struct platform_driver fe_driver = {

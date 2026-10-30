@@ -64,8 +64,8 @@ Signed-off-by: Pablo Neira Ayuso <pablo@netfilter.org>
  		return;
 +	}
  
- 	if (nf_flow_timeout_delta(ct->timeout) > (__s32)timeout)
- 		ct->timeout = nfct_time_stamp + timeout;
+ 	if (nf_flow_timeout_delta(READ_ONCE(ct->timeout)) > (__s32)timeout)
+ 		WRITE_ONCE(ct->timeout, nfct_time_stamp + timeout);
 @@ -265,11 +268,35 @@ static const struct rhashtable_params nf
  	.automatic_shrinking	= true,
  };
@@ -102,8 +102,8 @@ Signed-off-by: Pablo Neira Ayuso <pablo@netfilter.org>
 +	flow->timeout = nf_flowtable_time_stamp + flow_offload_get_timeout(flow);
  
  	err = rhashtable_insert_fast(&flow_table->rhashtable,
- 				     &flow->tuplehash[0].node,
-@@ -301,7 +328,7 @@ EXPORT_SYMBOL_GPL(flow_offload_add);
+ 				     &flow->tuplehash[FLOW_OFFLOAD_DIR_REPLY].node,
+@@ -302,7 +329,7 @@ EXPORT_SYMBOL_GPL(flow_offload_add);
  void flow_offload_refresh(struct nf_flowtable *flow_table,
  			  struct flow_offload *flow)
  {
